@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concept 2 · Flexure selection</title>
+<style>
+  :root { color-scheme: light; font: 15px/1.45 system-ui, sans-serif; color: #172435; background: #f4f7fa; }
+  * { box-sizing: border-box; }
+  main { max-width: 1536px; margin: auto; padding: clamp(16px, 3vw, 48px); }
+  h1 { margin: 0 0 .35rem; font-size: clamp(1.65rem, 3vw, 2.5rem); letter-spacing: -.04em; line-height: 1.15; }
+  p { max-width: 80ch; margin: .5rem 0 1.2rem; color: #45566a; }
+  .sheet { overflow-x: auto; border: 1px solid #d7e1ec; border-radius: 12px; background: white; }
+  table { border-collapse: collapse; width: 100%; min-width: 1110px; }
+  th, td { padding: 12px 9px; vertical-align: top; border-bottom: 1px solid #e4ebf2; text-align: left; }
+  thead th { background: #e8f0f7; font-size: .84rem; white-space: nowrap; }
+  tr:last-child :is(th, td) { border-bottom: 0; }
+  tbody tr:focus-within { background: #f5faff; }
+  tbody th { min-width: 88px; color: #164c71; }
+  label { display: block; font-size: .77rem; margin: 4px 0; }
+  label:first-child { margin-top: 0; }
+  input, select { display: block; font: inherit; font-size: .9rem; border: 1px solid #9fb1c3; border-radius: 5px;
+    background: #fff; color: inherit; width: 100%; min-height: 34px; padding: 5px 6px; }
+  input:focus-visible, select:focus-visible { outline: 2px solid #147bb5; outline-offset: 1px; }
+  .compact { min-width: 78px; }
+  select { min-width: 125px; }
+  .numbers { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .assessment { min-width: 145px; }
+  [data-tone="pass"] { color: #176443; }
+  [data-tone="fail"] { color: #a1232c; }
+  [data-tone="check"] { color: #82531c; }
+  footer { margin-top: 16px; font-size: .86rem; }
+  footer p { margin-bottom: .55rem; }
+</style>
+<main>
+  <h1>Flexure selection</h1>
+  <p id="geometry">Concept 2 · One AC revolution · 721 poses from the Python geometry model.</p>
+  <div class="sheet" role="region" aria-label="Editable flexure table" tabindex="0">
+    <table aria-describedby="geometry">
+      <thead><tr>
+        <th scope="col">Joint</th><th scope="col">Angular travel</th>
+        <th scope="col">Material</th><th scope="col">Type</th>
+        <th scope="col">Strip dimensions</th><th scope="col">Strain limit</th>
+        <th scope="col">Strain / length / k</th><th scope="col">Strain check</th>
+      </tr></thead>
+      <tbody id="joints"></tbody>
+    </table>
+  </div>
+  <footer>
+    <p>A rest offset of 0° places the rest angle at the midpoint of the calculated rotation range. Free length is measured between the clamp edges. Enter the strain limit as a percentage. Enter <strong>0.1</strong> for 0.10%.</p>
+    <p>The straight-strip model assumes uniform pure bending. For a single-stage crossed-flexure pivot (CFP), it gives a lower bound per straight clamped blade. If the lower bound is within the limit, check the peak strain over the full travel using ANSYS or a measurement. Enter the highest absolute strain from that check for a CFP or custom joint.</p>
+    <p>Pivot drift, strength under additional loads, and fatigue life require separate checks. Your browser saves inputs locally when storage is available.</p>
+  </footer>
+</main>
+<script id="geometry-data" type="application/json">{"widthMm": 10.0, "joints": [{"id": "B_BQ", "label": "B \u00b7 Ground\u2013BQ", "minDeg": -317.4835692345908, "maxDeg": -273.82003194009786}, {"id": "B_BD", "label": "B \u00b7 Ground\u2013BD", "minDeg": -346.86166291937633, "maxDeg": -259.86414889567146}, {"id": "P", "label": "P", "minDeg": -177.97620498586042, "maxDeg": -124.55352733520158}, {"id": "Q", "label": "Q", "minDeg": -52.4366764657183, "maxDeg": -40.73980144192193}, {"id": "D", "label": "D", "minDeg": -72.37869995276928, "maxDeg": -8.068680128143011}, {"id": "T1", "label": "T1", "minDeg": -41.1290674524094, "maxDeg": 27.00612013465854}, {"id": "T2", "label": "T2", "minDeg": -46.255764362939445, "maxDeg": 30.44094216734731}]}</script>
+<script>
+"use strict";
+
+function assess(limits, input) {
+  const center = (limits.minDeg + limits.maxDeg) / 2;
+  const rest = center + (input.restOffset ?? 0);
+  const low = limits.minDeg - rest;
+  const high = limits.maxDeg - rest;
+  const peakRad = Math.max(Math.abs(low), Math.abs(high)) * Math.PI / 180;
+  const numericFields = ["thickness", "width", "length", "limit", "modulus", "verified"];
+  const invalid = numericFields.some(key => input[key] !== null &&
+    (!Number.isFinite(input[key]) || input[key] < 0 || (key !== "verified" && input[key] === 0)))
+    || (input.restOffset !== null && !Number.isFinite(input.restOffset));
+  if (invalid) return {low, high, status: "Check the inputs", tone: "fail"};
+
+  const hasStrip = input.type === "strip" || input.type === "cfp";
+  const strain = hasStrip && input.thickness && input.length
+    ? 100 * input.thickness * peakRad / (2 * input.length) : null;
+  const minLength = hasStrip && input.thickness && input.limit
+    ? input.thickness * peakRad / (2 * (input.limit / 100)) : null;
+  const maxThickness = hasStrip && input.length && input.limit && peakRad > 0
+    ? 2 * input.length * (input.limit / 100) / peakRad : null;
+  // With GPa and mm, the conversion to N·m cancels.
+  const stiffness = input.type === "strip" && input.modulus && input.width && input.thickness && input.length
+    ? input.modulus * input.width * input.thickness ** 3 / (12 * input.length) : null;
+  const result = {low, high, strain, minLength, maxThickness, stiffness, status: "Enter the missing dimensions and strain limit",
+                  tone: "check"};
+  if (input.limit === null) return result;
+  if (strain !== null && strain > input.limit) {
+    return {...result, status: input.type === "cfp" ? "Lower bound exceeds limit" : "Above strain limit", tone: "fail"};
+  }
+  if (input.type === "strip") {
+    return strain === null ? result : {...result, status: "Within limit in bending model", tone: "pass"};
+  }
+  if (input.verified !== null) {
+    return {...result, status: input.verified <= input.limit ? "Entered strain within limit" : "Entered strain above limit",
+            tone: input.verified <= input.limit ? "pass" : "fail"};
+  }
+  return {...result, status: "ANSYS or measurement needed"};
+}
+
+const geometry = JSON.parse(document.getElementById("geometry-data").textContent);
+if (geometry.joints.length === 0) {
+  document.getElementById("geometry").textContent = "The solver could not complete a closed revolution on this assembly branch.";
+}
+const storageKey = "concept2-flexures-en-" + JSON.stringify(geometry.joints);
+const legacyKey = "concept2-flexures-" + JSON.stringify(
+  geometry.joints.map(joint => ({...joint, label: joint.label.replace("Ground", "grond")}))
+);
+// Keep selections saved by the Dutch version of the table.
+const legacyMaterials = {
+  "Verenstaal 1.4310": "spring-14310", "Ander verenstaal": "spring-other",
+  "Constructiestaal": "structural-steel", "Anders": "other",
+};
+let saved = {};
+try {
+  saved = JSON.parse(localStorage.getItem(storageKey) ?? localStorage.getItem(legacyKey)) || {};
+} catch {}
+
+const tools = document.getElementById("joints");
+const fmt = new Intl.NumberFormat("en-GB", {maximumFractionDigits: 3});
+const angleFmt = new Intl.NumberFormat("en-GB", {maximumFractionDigits: 1, signDisplay: "exceptZero"});
+const numeric = (field, label, placeholder = "") => {
+  const signed = field === "restOffset" ? "" : ' min="0"';
+  return '<label>' + label + '<input data-field="' + field + '" type="number" step="any"' +
+    signed + ' placeholder="' + placeholder + '"></label>';
+};
+
+for (const joint of geometry.joints) {
+  const row = document.createElement("tr");
+  row.innerHTML = [
+    '<th scope="row"></th>',
+    '<td class="numbers"><strong data-result="angles"></strong>' + numeric("restOffset", "Rest offset [°]", "0") + '</td>',
+    '<td><label>Material<select data-field="material"><option value="">Select material</option>' +
+      '<option value="spring-14310">1.4310 spring steel</option><option value="spring-other">Other spring steel</option>' +
+      '<option value="structural-steel">Structural steel</option><option>PLA</option><option>TPU</option>' +
+      '<option value="other">Other</option></select></label>' +
+      numeric("modulus", "E [GPa]") + '</td>',
+    '<td><label>Joint type<select data-field="type"><option value="strip">Straight strip</option>' +
+      '<option value="cfp">Crossed pivot (CFP)</option><option value="custom">Compound / other</option>' +
+      '</select></label><div data-verified>' + numeric("verified", "ANSYS / measured strain [%]") + '</div></td>',
+    '<td class="compact">' + numeric("thickness", "Thickness [mm]", "0.20") + numeric("width", "Width [mm]") +
+      numeric("length", "Free length [mm]") + '</td>',
+    '<td class="compact">' + numeric("limit", "Max. strain [%]") + '</td>',
+    '<td class="numbers" data-result="metrics"></td>',
+    '<td class="assessment" aria-live="polite"><strong data-result="status"></strong></td>',
+  ].join("");
+  tools.append(row);
+  row.querySelector("th").textContent = joint.label;
+  const fields = Object.fromEntries([...row.querySelectorAll("[data-field]")].map(el => [el.dataset.field, el]));
+  const defaults = {type: joint.id === "B_BD" ? "cfp" : "strip", width: geometry.widthMm};
+  for (const [name, field] of Object.entries(fields)) {
+    field.setAttribute("aria-label", field.parentElement.firstChild.textContent.trim() + " · " + joint.label);
+    const value = (saved[joint.id] || {})[name] ?? defaults[name] ?? "";
+    field.value = name === "material" ? (legacyMaterials[value] ?? value) : value;
+  }
+  row.addEventListener("input", event => {
+    if (["type", "material", "thickness", "width", "length", "restOffset", "modulus"].includes(event.target.dataset.field)) {
+      fields.verified.value = "";
+    }
+    saved[joint.id] = Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.value]));
+    try { localStorage.setItem(storageKey, JSON.stringify(saved)); } catch {}
+    update();
+  });
+
+  function update() {
+    const input = Object.fromEntries(Object.entries(fields).map(([name, field]) => [
+      name, field.type !== "number" ? field.value :
+        field.validity.badInput ? NaN : field.value === "" ? null : field.valueAsNumber
+    ]));
+    row.querySelector("[data-verified]").hidden = input.type === "strip";
+    const current = assess(joint, input);
+    row.querySelector('[data-result="angles"]').textContent =
+      angleFmt.format(current.low) + "° to " + angleFmt.format(current.high) + "°";
+    const status = row.querySelector('[data-result="status"]');
+    status.textContent = current.status;
+    status.dataset.tone = current.tone;
+    const metrics = row.querySelector('[data-result="metrics"]');
+    const strainLabel = input.type === "cfp" ? "Strain ≥ " : "Peak strain ";
+    const values = [
+      current.strain != null && strainLabel + fmt.format(current.strain) + "%",
+      current.minLength != null && "L min. " + fmt.format(current.minLength) + " mm",
+      current.maxThickness != null && "t max. " + fmt.format(current.maxThickness) + " mm",
+      current.stiffness != null && "k " + fmt.format(current.stiffness) + " N·m/rad",
+    ].filter(Boolean);
+    metrics.replaceChildren(...values.map(value => {
+      const line = document.createElement("div");
+      line.textContent = value;
+      return line;
+    }));
+    if (values.length === 0) metrics.textContent = "—";
+  }
+  update();
+}
+</script>

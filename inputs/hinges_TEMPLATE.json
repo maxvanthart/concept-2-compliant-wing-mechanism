@@ -1,0 +1,25 @@
+{
+  "_instructions": "Use one entry per physical lumped flexure. Omit the revolute joints at A and C for Concept 2. Specify the two rigid bodies, including ground where applicable, that rotate relative to one another. Treat each rigid triangle as one body. Fill the unknown geometry and material data. The 10 mm width is the project design input.",
+  "materials": {
+    "chosen_material": {
+      "youngs_modulus_pa": null,
+      "allowable_stress_pa": null,
+      "allowable_strain": null,
+      "fatigue_amplitude_allowable_pa": null
+    }
+  },
+  "hinges": [
+    {
+      "name": "H1",
+      "link_a": "FILL_LINK_A",
+      "link_b": "FILL_LINK_B",
+      "length_m": null,
+      "width_m": 0.01,
+      "thickness_m": null,
+      "material": "chosen_material",
+      "stiffness_factor": null,
+      "rest_angle_rad": null,
+      "target_stiffness_nm_rad": null
+    }
+  ]
+}
