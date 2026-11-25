@@ -5,14 +5,17 @@ Run the following commands from the project directory with Python 3.10 or later.
 ```powershell
 python -m pip install -r requirements.txt
 python run_concept2.py --require-closed
-python run_wing_sweep.py
+python run_flexure_dashboard.py
+python run_wing_sweep.py --common-k 0.02709504 --out results/C2_WING_SWEEP_PETG
 python -B -m unittest discover -s tests -v
 ```
 
 | Task | Entry point and output |
 | --- | --- |
 | Check loop closure and generate the PRBM schematic | `run_concept2.py` → `results/C2/` |
-| Compare flexure designs interactively | Open `results/C2/flexure_table.html` in a browser |
+| Compare required travel across Concept 2 joints | Open `results/C2/flexure_table.html` in a browser |
+| Explore a crossed-flexure design, check stress and fatigue amplitude, or export a CAD sketch | [Flexure dashboard](#flexure-dashboard) |
+| Reproduce the seven-hinge PETG torque sweep | [PETG wing sweep](#petg-wing-sweep) |
 | Calculate the wing path, rotation, and input torque | `run_wing_sweep.py` → `results/C2_WING_SWEEP/` |
 | Size flexures using design inputs | `run_dimensioning.py`, with templates in `inputs/` |
 | Find the original single-link demo | `archive/legacy/` |
@@ -108,3 +111,120 @@ A design-level result requires the physical flexure locations and body pairs, th
 - `inputs/hinges_TEMPLATE.json` leaves unknown design values blank. `inputs/kinematics_TEMPLATE.csv` gives the expected CSV layout.
 - `tests/` checks position and velocity closure, angle unwrapping, virtual pivot geometry, and inverse sizing.
 
+
+## Crossed-flexure pivot
+
+Run `python run_crossed_flexure.py` for the isolated pivot described by
+[Rommers et al. (2024), Fig. 2 and Table 2](https://doi.org/10.1016/j.precisioneng.2024.05.021).
+The script writes a CSV and PNG to `results/CFP/`. The PNG shows peak surface
+stress, reaction moment, virtual-pivot drift, deformed blades at both rotation
+limits, and the independently released blade centerlines. The CSV includes
+peak absolute elastic surface strain and both drift components.
+
+The quasi-static 2D model clamps two extensible Euler–Bernoulli blades to rigid
+plates. It fixes the base, prescribes the top plate rotation, and solves its
+translation at zero net external force. The virtual pivot is the neutral
+intersection carried with the moving plate. The STAGE-inspired variant centers
+the two signed bending-moment extremes at each clamp and uses corresponding
+intrinsic curvature and axial strain to realize that prestress in the assembled
+neutral pose. Blade contact, clamp compliance, out-of-plane motion and wing
+loads are outside this model.
+
+Default geometry is 100 × 100 mm with 0.5 mm thickness and E = 114 GPa.
+The effective width per diagonal is 15 mm, half the article's assembly width
+of 30 mm. Use `--help` for geometry, sweep and output options.
+
+## Identical crossed-flexure pivots
+
+### Flexure dashboard
+
+Run `python run_flexure_dashboard.py`. Choose material, free diagonal blade
+length, thickness, **width per blade**, and crossing angle. The 2D solver
+animates the two blades and the moving block. The green point tracks the
+neutral pivot attached to that block and shows its drift in X and Y.
+**Save CAD PNG** exports the neutral centerline dimensions.
+
+- **Pause / Manual** lets you position the hinge over ±45°. Auto-play uses ±25°.
+- **Check configuration** shows the peak blade stress against the published
+  material reference and reports the cyclic stress amplitude. The absolute
+  **Manual angle** sets the symmetric check range. A zero setting checks ±45°.
+  The result appears in a plot and in the terminal.
+- **Fit stiffness** fits a single linear stiffness through the origin to the
+  nonlinear reaction-moment curve. It uses the same manual angle setting
+  and defaults to ±25° at zero. The terminal prints a wing-sweep command
+  with the fitted `--common-k` in N·m/rad.
+- The stiffness displayed in the animation uses the small-angle estimate
+  `k = 2 E I / L`, with `I = b t^3 / 12`. It describes one complete pivot
+  with two identical blades.
+
+### PETG wing sweep
+
+The current PETG example uses PolyLite PETG, 30 mm free length, 0.8 mm thickness,
+4.5 mm width per blade, and a 90° crossing angle. The dashboard's small-angle
+estimate is **0.4729 N·mm/° per complete pivot**, or **0.02709504 N·m/rad**.
+The sweep applies this same stiffness to all seven candidate torsion springs.
+Each spring's rest angle is centered in its own travel range.
+
+```powershell
+python run_wing_sweep.py --common-k 0.02709504 --out results/C2_WING_SWEEP_PETG
+```
+
+Use [input_torque.png](results/C2_WING_SWEEP_PETG/input_torque.png) or the
+`flexure_torque_nm` column in [wing_sweep.csv](results/C2_WING_SWEEP_PETG/wing_sweep.csv).
+Over 721 positions the flexure contribution ranges from **−0.0308 to +0.0279
+N·m** in the default clockwise sweep. Negative torque means the springs
+assist motion in the sweep direction. This example covers elastic torque.
+To include modeled drag in N·m, also supply `--rpm` and either
+`--drag-factor` or `--air-density` with `--drag-coefficient`. The sweep is
+quasi-static and does not include inertia.
+
+To calculate a shared small-angle stiffness directly from dimensions, use the
+four `--cfp-*` options in place of `--common-k`. Length is the free diagonal
+length and width is per blade.
+
+```powershell
+python run_wing_sweep.py --cfp-length-mm 30 --cfp-width-mm 4.5 --cfp-thickness-mm 0.8 --cfp-e-gpa 2.1168 --out results/C2_WING_SWEEP_PETG
+```
+
+### One-revolution bench test
+
+For the PETG sweep, a starting setup is a pulley with a 15 mm effective
+radius (measured to the rope centerline), a 0.5 kg counterweight, and a
+45 N inline load cell on the actuator side. With direct 1:1 rope travel,
+one crank revolution requires 94.2 mm of usable actuator stroke. A 100 mm
+actuator leaves 5.8 mm of total reserve. A 150 mm actuator leaves 55.8 mm
+and gives more room to position the measurement between end stops.
+
+For a slow test, estimate actuator-side tension as
+`F_loadcell = m_counterweight * g + T_input / r`, with positive torque
+in the actuation direction. The PETG elastic torque predicts about
+2.85 to 6.76 N over the turn. Friction, air loads, and accelerations can
+change the measured force. This estimate assumes a taut rope and no slip.
+
+### Crossed-flexure material presets
+
+The stress check compares elastic-model peak stress against the published
+reference below. Filament values are for printed XY test specimens. The
+filament references describe tensile strength or stress at a specified
+elongation. They do not give the elastic limit or a fatigue allowable.
+The TPU point at 100% strain only provides context for the linear-material
+model. Nylon uses the moisture-conditioned data.
+
+| Preset | Young's modulus (GPa) | Reference (MPa) | Basis and source |
+| --- | ---: | ---: | --- |
+| PLA | 3.4269 | 52.3 | XY tensile strength, [PolyLite PLA](https://polymaker.com/wp-content/uploads/lana-downloads/PolyLite-PLA_TDS_EN_V5.4.pdf) |
+| PLA+ | 2.9322 | 49.8 | XY tensile strength, [PolyLite PLA Pro](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/pla/polylite-tm-pla-pro) |
+| PETG | 2.1168 | 50.8 | XY tensile strength, [PolyLite PETG](https://polymaker.com/product/polylite-petg) |
+| PA | 0.724 | 34.3 | Conditioned XY tensile strength, [PolyMide CoPA](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/nylon/polymide-tm-copa) |
+| TPU | 0.0336 | 11.1 | XY stress at 100% strain, [PolyFlex TPU95](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/tpu/polyflex-tm-tpu95) |
+| Steel | 185 | 1150 | Rp0.2, [Alleima 12R11](https://integration.alleima.com/jp/technical-center/material-datasheets/strip-steel/alleima-12r11/), cold rolled with Rm = 1300 MPa |
+
+The dashboard also offers Alleima 12R11 in the cold-rolled Rm = 1500 MPa
+condition (Rp0.2 = 1375 MPa). The original Steel preset retains Rp0.2 = 1150 MPa.
+For Steel 1500, the manufacturer's reversed-bending reference is 555 MPa at
+0.50 mm or 525 MPa at 0.75 mm. These values are for transverse bending, zero
+mean stress, and 50% survival at 2 million cycles. Other configurations can
+use a user-supplied fatigue stress amplitude limit in MPa. The amplitude is
+half the local stress range over the symmetric angle sweep, calculated at each
+blade surface and then maximized. The comparison reports mean stress separately
+and does not apply a mean-stress correction or predict fatigue life.

@@ -46,7 +46,7 @@ def wing_incidence(phi, motion):
     return angle_deg, projected_fraction
 
 
-def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1):
+def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1, common_k=None):
     q, positions, velocities = sweep(direction)
     xy = np.array([pos['wing_position_m'] for pos in positions])
     phi = np.unwrap([pos['wing_orientation_rad'] for pos in positions])
@@ -72,6 +72,9 @@ def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1):
             flex += (angle - rest) * sensitivity
             data[f'hinge_{name}_rad'] = angle
         flex_key = 'flexure_torque_per_common_k'
+        if common_k is not None:
+            flex *= common_k
+            flex_key = 'flexure_torque_nm'
     else:
         for hinge in hinges:
             a, b = (BODY_ANGLES.get(link) for link in (hinge.link_a, hinge.link_b))
@@ -95,7 +98,7 @@ def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1):
         data.update(wing_fx_n=force[:, 0], wing_fy_n=force[:, 1])
         drag_key = 'wing_drag_torque_nm'
         data[drag_key] = -np.einsum('ij,ij->i', force, dr_dq)
-    if hinges is not None and drag_factor is not None:
+    if flex_key == 'flexure_torque_nm' and drag_factor is not None:
         data['total_quasistatic_torque_nm'] = data[flex_key] + data[drag_key]
     return data, flex_key, drag_key
 
@@ -187,6 +190,12 @@ def save_sweep(out, data, flex_key, drag_key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hinges', type=Path, help='Physical flexure JSON with stiffness and rest angles')
+    cfp = parser.add_argument_group('Identical crossed-flexure pivots (dimensions per blade)')
+    cfp.add_argument('--common-k', type=float, help='Shared fitted stiffness in N m/rad')
+    cfp.add_argument('--cfp-length-mm', type=float, help='Free diagonal blade length')
+    cfp.add_argument('--cfp-width-mm', type=float, help='Width of one blade')
+    cfp.add_argument('--cfp-thickness-mm', type=float, help='Thickness of one blade')
+    cfp.add_argument('--cfp-e-gpa', type=float, help="Material Young's modulus")
     parser.add_argument('--rpm', type=float, help='Non-negative AC speed in revolutions per minute')
     parser.add_argument('--counterclockwise', action='store_true', help='Reverse the default clockwise input rotation')
     parser.add_argument('--drag-factor', type=float, help='Broadside c = rho * C_D * A / 2 [kg/m]')
@@ -196,6 +205,21 @@ def main():
     args = parser.parse_args()
     if args.rpm is not None and (not np.isfinite(args.rpm) or args.rpm < 0):
         parser.error('--rpm must be finite and non-negative; use --counterclockwise to reverse')
+    common_k = args.common_k
+    if common_k is not None and (args.hinges is not None or not np.isfinite(common_k) or common_k <= 0):
+        parser.error("--common-k must be positive and finite and cannot be used with --hinges.")
+    blade = (args.cfp_length_mm, args.cfp_width_mm, args.cfp_thickness_mm, args.cfp_e_gpa)
+    if any(value is not None for value in blade):
+        if args.hinges is not None or common_k is not None:
+            parser.error('Use one of the shared CFP dimensions, --common-k, or --hinges.')
+        if not all(value is not None and np.isfinite(value) and value > 0 for value in blade):
+            parser.error('Supply positive finite length, width, thickness and modulus for the CFP.')
+        length, width, thickness = (value / 1000 for value in blade[:3])
+        modulus = blade[3] * 1e9
+        common_k = 2 * modulus * width * thickness**3 / (12 * length)
+    if common_k is not None:
+        print(f'Shared CFP stiffness: {common_k:.6g} N m/rad per pivot '
+              f'({len(FLEXURE_PAIRS)} pivots)')
     drag_factor = args.drag_factor
     if args.air_density is not None or args.drag_coefficient is not None:
         if drag_factor is not None:
@@ -215,7 +239,7 @@ def main():
     try:
         hinges = load_config(args.hinges) if args.hinges else None
         direction = 1 if args.counterclockwise else -1
-        data, flex_key, drag_key = calculate(hinges, args.rpm, drag_factor, direction=direction)
+        data, flex_key, drag_key = calculate(hinges, args.rpm, drag_factor, direction=direction, common_k=common_k)
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.error(str(error))
     save_sweep(args.out, data, flex_key, drag_key)
