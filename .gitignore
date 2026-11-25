@@ -1,3 +1,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+/results/C2_WING_SWEEP/
+/results/C2_SHARED_CFP/
+/results/CFP/
+/results/PRBM_CONCEPT2_UNVALIDATED/
+/results/PRBM_DEMO_NOT_CONCEPT2/

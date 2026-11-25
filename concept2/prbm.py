@@ -1,5 +1,4 @@
 """Reference geometry for a user-specified planar PRBM."""
-from dataclasses import dataclass
 import numpy as np
 
 
@@ -48,31 +47,3 @@ def reference_geometry(virtual_springs, rigid_links, fixed_points=None):
             raise ValueError(f'{link}: effective rigid length must be positive')
         lengths[link] = length
     return {'virtual_spring_xy_m': springs, 'effective_link_length_m': lengths}
-
-
-@dataclass
-class Flexure:
-    length_m: float
-    width_m: float
-    thickness_m: float
-    youngs_modulus_pa: float
-    # The PRBM coefficient is NOT supplied in the source PDF.
-    prbm_stiffness_factor: float | None = None
-
-    def I_m4(self) -> float:
-        """Bending inertia for a rectangular cross section about the thin axis."""
-        return self.width_m*self.thickness_m**3/12
-
-    def rotational_stiffness_nm_rad(self) -> float:
-        if self.prbm_stiffness_factor is None:
-            raise NotImplementedError('Choose and justify a PRBM stiffness factor.')
-        return (self.prbm_stiffness_factor*self.youngs_modulus_pa
-                *self.I_m4()/self.length_m)
-
-    def energy_joule(self, angle_rad: float, rest_angle_rad: float) -> float:
-        return .5*self.rotational_stiffness_nm_rad()*(angle_rad-rest_angle_rad)**2
-
-
-def equations_of_motion(q, qdot, parameters):
-    """Reserved for M(q) qdd + C(q,qdot) qdot + dV/dq = Q + Jc.T*lambda."""
-    raise NotImplementedError('Dynamics/PRBM hinge layout not yet specified.')

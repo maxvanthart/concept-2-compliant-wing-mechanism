@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from concept2.config import Concept2Config, MOTIONGEN_THETA1_RAD, MOTIONGEN_THETA6_RAD
+from concept2.config import (CFP_CROSSING_DEG, Concept2Config,
+                             MOTIONGEN_THETA1_RAD, MOTIONGEN_THETA6_RAD)
 from concept2.geometry import sweep_driven_positions
 from concept2.prbm import FLEXURE_PAIRS, relative_flexure_angles
 from concept2.velocity import solve_driven_velocities
@@ -46,7 +47,19 @@ def wing_incidence(phi, motion):
     return angle_deg, projected_fraction
 
 
-def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1, common_k=None):
+def cfp_moment_curve(length, width, thickness, modulus, crossing_deg, max_twist):
+    """Return signed holding moments for the unloaded isolated CFP."""
+    from run_crossed_flexure import sweep as sweep_cfp
+
+    angle = np.deg2rad(crossing_deg / 2)
+    twists = np.linspace(-max_twist, max_twist, 201)
+    poses = sweep_cfp(length * np.sin(angle), length * np.cos(angle),
+                      thickness, width, modulus, twists)
+    return twists, np.array([pose[2] for pose in poses])
+
+
+def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1, common_k=None,
+              nonlinear_cfp=None):
     q, positions, velocities = sweep(direction)
     xy = np.array([pos['wing_position_m'] for pos in positions])
     phi = np.unwrap([pos['wing_orientation_rad'] for pos in positions])
@@ -66,13 +79,25 @@ def calculate(hinges=None, rpm=None, drag_factor=None, *, direction=-1, common_k
     }
     flex = np.zeros_like(q)
     if hinges is None:
+        motions = []
         for name, (a, b) in FLEXURE_PAIRS.items():
             angle, sensitivity = hinge_motion(a, b, positions, velocities)
             rest = 0.5 * (angle.min() + angle.max())
-            flex += (angle - rest) * sensitivity
+            twist = angle - rest
+            motions.append((twist, sensitivity))
+            flex += twist * sensitivity
             data[f'hinge_{name}_rad'] = angle
         flex_key = 'flexure_torque_per_common_k'
-        if common_k is not None:
+        if nonlinear_cfp is not None:
+            length, width, thickness, modulus, _ = nonlinear_cfp
+            linear_k = modulus * width * thickness**3 / (6 * length)
+            max_twist = max(np.abs(twist).max() for twist, _ in motions)
+            angles, moments = cfp_moment_curve(*nonlinear_cfp, max_twist)
+            data['linear_reference_flexure_torque_nm'] = linear_k * flex
+            flex = sum(np.interp(twist, angles, moments) * sensitivity
+                       for twist, sensitivity in motions)
+            flex_key = 'flexure_torque_nm'
+        elif common_k is not None:
             flex *= common_k
             flex_key = 'flexure_torque_nm'
     else:
@@ -179,6 +204,11 @@ def save_sweep(out, data, flex_key, drag_key):
         ax.axhline(0, color='#657284', linewidth=0.7)
         ax.set(ylabel=units, title=title)
         ax.grid(alpha=0.24)
+    if 'linear_reference_flexure_torque_nm' in data:
+        axes[0].lines[0].set_label('Nonlinear CFP')
+        axes[0].plot(q, data['linear_reference_flexure_torque_nm'], '--', color='#657284',
+                     label='Linear shared stiffness')
+        axes[0].legend(loc='best')
     axes[-1].plot(q, data['wing_incidence_deg'], color=violet)
     axes[-1].set(ylabel='Acute angle [deg]', title='L11 angle to the relative airflow', ylim=(0, 90))
     axes[-1].grid(alpha=0.24)
@@ -196,6 +226,10 @@ def main():
     cfp.add_argument('--cfp-width-mm', type=float, help='Width of one blade')
     cfp.add_argument('--cfp-thickness-mm', type=float, help='Thickness of one blade')
     cfp.add_argument('--cfp-e-gpa', type=float, help="Material Young's modulus")
+    cfp.add_argument('--nonlinear-cfp', action='store_true',
+                     help='Calculate torque from the isolated CFP moment curve and compare with linear stiffness')
+    cfp.add_argument('--cfp-crossing-deg', type=float, default=CFP_CROSSING_DEG,
+                     help='Crossing angle for the nonlinear model')
     parser.add_argument('--rpm', type=float, help='Non-negative AC speed in revolutions per minute')
     parser.add_argument('--counterclockwise', action='store_true', help='Reverse the default clockwise input rotation')
     parser.add_argument('--drag-factor', type=float, help='Broadside c = rho * C_D * A / 2 [kg/m]')
@@ -209,6 +243,9 @@ def main():
     if common_k is not None and (args.hinges is not None or not np.isfinite(common_k) or common_k <= 0):
         parser.error("--common-k must be positive and finite and cannot be used with --hinges.")
     blade = (args.cfp_length_mm, args.cfp_width_mm, args.cfp_thickness_mm, args.cfp_e_gpa)
+    nonlinear_cfp = None
+    if args.nonlinear_cfp and not all(value is not None for value in blade):
+        parser.error('--nonlinear-cfp requires all four CFP blade and material inputs.')
     if any(value is not None for value in blade):
         if args.hinges is not None or common_k is not None:
             parser.error('Use one of the shared CFP dimensions, --common-k, or --hinges.')
@@ -217,8 +254,13 @@ def main():
         length, width, thickness = (value / 1000 for value in blade[:3])
         modulus = blade[3] * 1e9
         common_k = 2 * modulus * width * thickness**3 / (12 * length)
+        if args.nonlinear_cfp:
+            if not 0 < args.cfp_crossing_deg < 180:
+                parser.error('--cfp-crossing-deg must lie strictly between 0 and 180.')
+            nonlinear_cfp = (length, width, thickness, modulus, args.cfp_crossing_deg)
     if common_k is not None:
-        print(f'Shared CFP stiffness: {common_k:.6g} N m/rad per pivot '
+        stiffness_label = 'Linear reference stiffness' if args.nonlinear_cfp else 'Shared CFP stiffness'
+        print(f'{stiffness_label}: {common_k:.6g} N m/rad per pivot '
               f'({len(FLEXURE_PAIRS)} pivots)')
     drag_factor = args.drag_factor
     if args.air_density is not None or args.drag_coefficient is not None:
@@ -239,8 +281,9 @@ def main():
     try:
         hinges = load_config(args.hinges) if args.hinges else None
         direction = 1 if args.counterclockwise else -1
-        data, flex_key, drag_key = calculate(hinges, args.rpm, drag_factor, direction=direction, common_k=common_k)
-    except (ValueError, OSError, KeyError, TypeError) as error:
+        data, flex_key, drag_key = calculate(hinges, args.rpm, drag_factor, direction=direction,
+                                             common_k=common_k, nonlinear_cfp=nonlinear_cfp)
+    except (ValueError, OSError, KeyError, TypeError, RuntimeError) as error:
         parser.error(str(error))
     save_sweep(args.out, data, flex_key, drag_key)
     print('Results saved to', args.out.resolve())

@@ -41,6 +41,12 @@ SCALED_LENGTHS_CM = LENGTHS_CM * SCALE_FACTOR
 ELEMENT_WIDTH_M = 0.01
 RATIOS_TO_L0 = LENGTHS_CM / LENGTHS_CM[0]
 
+# Reference CFP dimensions shared by the dashboard and the placement drawing.
+CFP_LENGTH_MM = 30.0
+CFP_THICKNESS_MM = 0.8
+CFP_BLADE_WIDTH_MM = 4.5
+CFP_CROSSING_DEG = 90.0
+
 @dataclass
 class Concept2Config:
     # A convenient normalization (L0=1). Set scale_m=physical L0 in metres later.

@@ -1,230 +1,298 @@
 # Concept 2 · Compliant wing mechanism
 
-Run the following commands from the project directory with Python 3.10 or later.
+This TU Delft project turns a rigid MotionGen wing linkage into a printable
+mechanism with seven crossed-flexure pivots (CFPs). The driven crank AC
+makes one full turn. The wing is mounted at the midpoint of T1–T2 (L11),
+with its chord directed from T1 to T2.
+
+## Run the project
+
+Run these commands from the project directory with Python 3.10 or newer.
 
 ```powershell
 python -m pip install -r requirements.txt
 python run_concept2.py --require-closed
-python run_flexure_dashboard.py
-python run_wing_sweep.py --common-k 0.02709504 --out results/C2_WING_SWEEP_PETG
-python -B -m unittest discover -s tests -v
+python run_wing_sweep.py
+python -m unittest discover -s tests
 ```
 
-| Task | Entry point and output |
+| Tool | Use it to |
 | --- | --- |
-| Check loop closure and generate the PRBM schematic | `run_concept2.py` → `results/C2/` |
-| Compare required travel across Concept 2 joints | Open `results/C2/flexure_table.html` in a browser |
-| Explore a crossed-flexure design, check stress and fatigue amplitude, or export a CAD sketch | [Flexure dashboard](#flexure-dashboard) |
-| Reproduce the seven-hinge PETG torque sweep | [PETG wing sweep](#petg-wing-sweep) |
-| Calculate the wing path, rotation, and input torque | `run_wing_sweep.py` → `results/C2_WING_SWEEP/` |
-| Size flexures using design inputs | `run_dimensioning.py`, with templates in `inputs/` |
-| Find the original single-link demo | `archive/legacy/` |
+| [`run_concept2.py`](run_concept2.py) | Check position and velocity closure, find the default assembly pose, and regenerate the schematics and fabrication frames in `results/C2/`. `--theta6-deg` selects an absolute AC angle from global +x. `--omega6` defaults to −1 rad/s (clockwise). |
+| [`run_flexure_dashboard.py`](run_flexure_dashboard.py) | Configure one CFP and preview its motion. **Check configuration** plots peak stress and reports cyclic stress amplitude. **Fit stiffness** returns a linear fit over the selected angle range. **Save CAD PNG** exports a dimensioned neutral sketch. |
+| [`run_crossed_flexure.py`](run_crossed_flexure.py) | Run the isolated nonlinear CFP model and export stress, strain, moment and pivot drift to `results/CFP/`. |
+| [`run_wing_sweep.py`](run_wing_sweep.py) | Plot the wing path, orientation and input torque over 721 poses. `--counterclockwise` reverses the sweep. The default outputs are `wing_kinematics.png`, `input_torque.png` and `wing_sweep.csv` in `results/C2_WING_SWEEP/`. |
+| [`run_dimensioning.py`](run_dimensioning.py) | Size flexures and evaluate supplied wing loads. Fill the [hinge JSON](inputs/hinges_TEMPLATE.json) and [kinematics CSV](inputs/kinematics_TEMPLATE.csv), then pass them with `--config` and `--kinematics`. Outputs include torque, hinge stress and strain, sizing and optional fatigue comparisons. `--layout` accepts a virtual-pivot layout. `--demo` runs a synthetic example. |
+| `run_concept2.py --step` | Export the four relaxed fabrication groups as coloured AP214 surfaces. See [CAD handoff](#5-relaxed-fabrication-and-cad-handoff). |
 
-## Reference geometry and loop closure
+## Design process
 
-*Berekeningen voor Compliant.pdf* gives the first two loops and the rigid triangles on p. 1, followed by the third loop and the CAD table on p. 2. The ratios on p. 3 agree with the CAD series in link order. The CAD table on p. 2 lists the links in this order: 0, 10, 6, 1, 5, 9, 7, 8, 4, 2, 3, 11. The model scales all link lengths by `20 / 26.115`. L4 is 200 mm, L11 is 38.0777 mm, and the element width is 10 mm.
+### 1. Establish the rigid kinematics
 
-The `2-fourbars.motiongen` file has one motor at A. AB is the fixed reference and AC (L6) is the driven crank. AP (L1) follows from the fixed length of L11. `run_concept2.py` uses the saved MotionGen pose as the starting point for following the assembly branch. `--theta6-deg` sets the AC angle in degrees from the global +x axis. `--omega6` sets the signed angular speed in rad/s and defaults to −1 rad/s (clockwise).
+The calculation notes define the CAD dimensions and three vector loops
+[1, pp. 1–3]. The MotionGen file supplies the starting pose and AC driver
+[2]. Scale every link by `20 / 26.115` to make L4 **200 mm**. The resulting
+L11 length is **38.078 mm** and the reference element width is **10 mm**.
 
-| Loop | Vector equation |
-| --- | --- |
-| 1 | R1 + R4 − R0 − R5 = 0 |
-| 2 | R6 + R9 − R0 − R10 = 0 |
-| 3 | R1 + R2 + R11 − R8 − R10 − R0 = 0 |
+Solve all three loops with AC prescribed and AP free to rock. The fixed
+length of L11 determines AP’s angle. Differentiating the loop equations
+checks that the velocities close as well. This preserves the original
+motion before hinge stiffness is introduced. The [PRBM schematic](results/C2/prbm_schematic.svg)
+shows the closed geometry, and the [link CSV](results/C2/prbm_link_geometry.csv)
+exports the pivot coordinates and lengths. The legacy `--fixed-phase`
+diagnostic illustrates why imposing equal speeds on AP and AC is
+incompatible with the closed mechanism.
 
-With R0 as the reference, the CAD directions of R3, R5, R6, R8, and R9 were reversed to match the vector loops and triangles. `concept2/config.py` also records the original CAD angles. The fixed phase `theta6 - theta1 = -0.55859265 rad` belongs to the separate `--fixed-phase` diagnostic. For that diagnostic, the default branches `(+1,+1,+1,+1)` reproduce the directed CAD angles to within about 0.00081 rad.
+Keep **A–P**, **A–C** and the joint at **C** as pin-and-hole interfaces.
+A–P and A–C share the A axis and can be stacked. AC turns continuously
+relative to its neighbours, and keeping AP on the same pin simplifies
+assembly.
 
-| Position residual | Loop 1 | Loop 2 | Loop 3 |
-| --- | ---: | ---: | ---: |
-| Raw CAD angles, mm | 174.432 | 233.267 | 452.657 |
-| Directed CAD angles, mm | 0.08841 | 0.04527 | 0.08276 |
-| Fixed-phase diagnostic at θ1 = 2.405 rad, mm | < 1e-12 | < 1e-12 | 0.01945 |
+### 2. Choose the flexures and their rest angles
 
-The fixed-phase diagnostic imposes equal angular speeds on AP and AC. At θ1 = 2.405308738589 rad, its positions close, while the required L11 length changes by +63.008 mm per radian of input. With AC as the sole driver, AP rocks between approximately 99.4° and 190.4° over one revolution. The tests check position and velocity closure at 361 poses and verify that the wing returns to its initial position and orientation.
+Use the lumped pseudo-rigid-body model (PRBM) [3, Ch. 5]. Each CFP becomes
+one torsion spring at the original pivot, so the nominal rigid lengths
+remain pivot-to-pivot distances. The crossed blades fit a longer bending
+length into a compact joint and guide motion near the original pivot.
+Using one common geometry simplifies fabrication and gives the seven
+joints a shared moment–angle curve [4, Fig. 2].
 
-`run_concept2.py` reports the position and velocity closure residuals and produces a geometry plot. `--require-closed` returns a nonzero exit code if the pose or motion fails the numerical closure check. The motion check uses displacement per radian, including when the specified motor speed is zero.
+For each parent–child pair, unwrap the signed relative angle
+$\delta_i=\theta_b-\theta_a$ over one revolution. Choose the neutral
+angle halfway between its extrema. This minimises the largest absolute
+twist of that joint for symmetric travel limits. The table shows CAD
+angles wrapped to ±180°. The [neutral-angle schematic](results/C2/prbm_neutral_angles.svg)
+also lists the unwrapped values for torque calculations.
 
-## PRBM schematic and flexure selection
+| Joint | Parent → child axis | Neutral angle | Required travel |
+| --- | --- | ---: | ---: |
+| B–BQ | L0 → L5 | +64.35° | ±21.83° |
+| B–BD | L0 → L10 | +56.64° | ±43.50° |
+| P | L1 → L4 | −151.26° | ±26.71° |
+| Q | L5 → L4 | −46.59° | ±5.85° |
+| D | L10 → L9 | −40.22° | ±32.16° |
+| T1 | L4 → L11 | −7.06° | ±34.07° |
+| T2 | L9 → L11 | −7.91° | ±38.35° |
 
-The pseudo-rigid-body model (PRBM) represents each candidate flexure as one torsion spring between two rigid bodies. Each triangle is a single rigid body. The virtual pivots lie at the MotionGen joints to preserve the nominal kinematics, so the effective lengths are the pivot-to-pivot distances. The free bending length of a physical flexure is a separate input.
+Each blade sees the full clamp-to-clamp rotation. The pure-bending
+relation gives $\varepsilon=t\delta/(2L)$ for uniform curvature [5].
+The isolated nonlinear two-blade model resolves the nonuniform strain,
+holding moment and pivot drift. The **reference PETG design** uses a
+30 mm free blade length, 0.8 mm thickness, 4.5 mm depth per blade and a
+90° crossing. B–BD sets the largest required range, **±43.5°**.
+Use the neutral-angle schematic for the required travel and the CFP
+dashboard to evaluate a hinge geometry against that travel.
 
-| Pivot | Rotational interfaces | PRBM |
+### 3. Orient the mounts and choose the assembly pose
+
+Place the neutral CFP crossing at its virtual pivot. If $\gamma_a$
+and $\gamma_b$ are the clamp angles measured from their respective body
+axes, choose them so $\gamma_b-\gamma_a=-\delta_{0,i}$. This makes the
+clamps parallel at the joint’s neutral angle. At T1 and T2 the coupler
+clamps face inward from opposite ends, perpendicular to L11, so they fit
+between the two pivots. The [placement schematic](results/C2/prbm_cfp_placement.svg)
+shows the actual clamp directions in the assembly pose.
+
+The hinge rest angles are independent. To choose one assembly pose, let
+$q$ be clockwise AC travel and $e_i(q)=\delta_i(q)-\delta_{0,i}$. With
+$\mathcal L=T-U$, the static Lagrange equation gives $U'(q)=Q_q$ [6].
+For a common linear stiffness $k>0$ and zero applied input moment,
+
+$$
+U(q)=\tfrac12 k\sum_i e_i(q)^2,\qquad
+U'(q)=k\sum_i e_i(q)\,[\theta_b'(q)-\theta_a'(q)]=0.
+$$
+
+The differentiated loop constraints determine the angle derivatives and the common $k$
+cancels from the stationarity condition. Equivalently,
+$\nabla U+J_g^\mathsf T\lambda=0$ for the loop constraints $g=0$.
+Projecting onto the admissible tangent $J_g\theta'=0$ gives $U'(q)=0$.
+The solver refines the minima found over a full revolution and chooses
+the lowest-energy pose.
+
+The default pose is **21.40° clockwise from the MotionGen start**
+(**−84.62° absolute AC**). For the reference linear PETG stiffness it
+stores **3.28 mJ**. The largest remaining twist is **18.27° at B–BQ**.
+[Pose and energy plot](results/C2/least_loaded_pose.png)
+
+### 4. Calculate wing motion and actuator torque
+
+Virtual work maps each holding moment $M_i$ to the actuator [6].
+With $q$ increasing in the direction of the sweep,
+
+$$
+T_\mathrm{flex}=\sum_i M_i(e_i)\,\frac{\mathrm d\delta_i}{\mathrm dq},
+\qquad
+T_\mathrm{drag}=-\mathbf F\cdot\frac{\mathrm d\mathbf r}{\mathrm dq}.
+$$
+
+The model uses the wing midpoint $\mathbf r=(T1+T2)/2$ and the orientation
+of L11. It treats the wing as a **40 mm × 1.05 m** flat plate in still air.
+The drag estimate uses $\tfrac12\rho C_D A$ and the projected area factor
+$|\sin\alpha|$, where $\alpha$ is the angle between L11 and the relative
+flow. The drag force opposes the midpoint velocity and scales with its
+squared speed [7]. Give `--rpm` plus `--air-density` and `--drag-coefficient`
+(or `--drag-factor`) for drag and combined quasi-static torque in N·m.
+With no drag inputs, the plot shows a normalized drag term. Positive
+actuator torque acts in the direction of the sweep.
+
+For the reference PETG modulus [8], the linear shared-stiffness model gives
+**−0.0308 to +0.0279 N·m**. The nonlinear model gives **−0.0319 to
++0.0290 N·m**. Both are elastic torque estimates on the nominal linkage
+kinematics. The isolated beam model applies zero net external
+force to the moving block, and the sweep excludes inertia and bearing
+friction. [Torque comparison](results/C2_WING_SWEEP_PETG_NONLINEAR/input_torque.png)
+· [CSV](results/C2_WING_SWEEP_PETG_NONLINEAR/wing_sweep.csv)
+
+```powershell
+python run_wing_sweep.py --nonlinear-cfp --cfp-length-mm 30 --cfp-width-mm 4.5 --cfp-thickness-mm 0.8 --cfp-e-gpa 2.1168 --out results/C2_WING_SWEEP_PETG_NONLINEAR
+```
+
+The simple pin-and-spring and drift-aware four-bar PRBMs are described in
+[9]. For our separate crossed blades, $K=2EI/L$ gives
+**0.02710 N·m/rad** near zero [10, Sec. 5.1]. At +43.5°, the dashboard
+shows **20.57 N·mm** from this linear model and **22.37 N·mm** from the
+nonlinear solver. Use the nonlinear moment curve for the full-stroke
+torque calculation.
+
+### 5. Relaxed fabrication and CAD handoff
+
+Print four groups with their **own CFPs in the relaxed shape**. Rotate the
+links within each group to the appropriate neutral angles, then align the
+groups using their pin and clamp interfaces during assembly. Keeping the
+ground rigid makes it a stable reference and lets the B flexures mount
+separately. The course’s hybrid fabrication example [11, slide 16] and
+the STAGE distinction between functional and stress-free fabrication
+geometry [4, Sec. 2], [12, Sec. 2.2] inform this approach.
+
+| Relaxed group | Contains | Assembly interface |
 | --- | --- | --- |
-| A | Ground–AP and ground–AC | Revolute joints |
-| B | Ground–BQ and ground–BD | Two candidate torsion springs |
-| P, Q | AP–triangle P–Q–T1 at P and BQ–the same triangle at Q | Candidate torsion springs |
-| C | AC–triangle C–D–T2 | Revolute joint |
-| D | BD–triangle C–D–T2 | Candidate torsion spring |
-| T1, T2 | Each triangle–L11 at its apex | Candidate torsion springs |
+| [Green](results/C2/step/concept2_green_relaxed.step) | Triangle C–D–T2, BD link, D and B–BD CFPs | C pin axis and T2 mounting direction |
+| [Blue](results/C2/step/concept2_blue_relaxed.step) | Triangle P–Q–T1, AP and BQ links, P, Q and B–BQ CFPs | A pin axis and T1 mounting direction |
+| [Red coupler](results/C2/step/concept2_coupler_relaxed.step) | L11 and the T1 and T2 CFPs | Free clamps mate to the triangle faces |
+| [Rigid ground](results/C2/step/concept2_ground_relaxed.step) | Inclined AB (−26.88°) and a horizontal foot | Shared A pin axis and two B mounting interfaces |
 
-AC makes a full revolution relative to the frame at A and relative to the second triangle at C. AP rocks about its own connection to the frame at A. The revolute joints at A and C carry zero elastic spring torque in this model. Ground–BQ and ground–BD have separate relative rotations at B.
-
-For a closed, AC-driven pose, `python run_concept2.py --require-closed` generates the SVG and PNG schematics under `results/C2/`. The **Twist** column shows the relative angular travel of each candidate torsion spring over a full AC revolution, centred between its two extreme angles. The physical mounting determines the actual rest angle. `prbm_link_geometry.csv` lists the pivot coordinates, nominal link lengths, and element width in mm for CAD and ANSYS. A detailed flexure model also needs the bending-zone geometry, transition radii, material properties, bearings, and loads.
-
-Open `results/C2/flexure_table.html` locally in a browser. Run `python run_concept2.py --require-closed` after a geometry change to update the angle limits from 721 poses. For each candidate flexure, enter the material, joint type, strip dimensions, strain limit, and any rest-angle offset. The width starts at 10 mm. Enter Young's modulus to calculate the linear torsional stiffness of a straight strip. Enter the strain limit as a percentage.
-
-For a straight strip, the table assumes uniform pure bending. For a single-stage crossed-flexure pivot (CFP) with straight, directly clamped blades, the calculation gives a lower bound on peak bending strain per blade. The change in end-tangent angles is the integral of curvature, so the maximum absolute curvature is at least as large as its absolute mean. Enter the peak strain from ANSYS or a measurement over the full travel to check a CFP or compound joint against the chosen limit. Pivot drift and fatigue life require separate checks.
-
-## Wing trajectory and torque sweep
-
-The wing is mounted at the midpoint of T1–T2 (L11). Its location is `(T1 + T2) / 2`. Its angle is `atan2(T2_y - T1_y, T2_x - T1_x)`, positive counterclockwise from the global +x axis. `run_concept2.py` also reports the midpoint velocity and the angular velocity of L11.
-
-`python run_wing_sweep.py` calculates 721 poses over one clockwise revolution of AC. Use `--counterclockwise` to reverse it. The output is `wing_kinematics.png`, `input_torque.png`, and `wing_sweep.csv` in `results/C2_WING_SWEEP/`. Zero travel is the saved MotionGen pose. In the CSV, `q_rad` runs from 0 to 2π in the chosen direction, and `ac_angle_rad` is the absolute AC angle measured counterclockwise from the global +x axis.
-
-Without a flexure configuration, the upper torque curve shows `T_flex/k` for a common torsional stiffness. The rest angle of each of the seven candidate springs is centred in its own angular range. Use `--hinges inputs/hinges_C2.json` to calculate flexure torque in N·m with physical flexure inputs. Use L0 for ground, L4 and L9 for the two triangles, and L1, L5, L10, and L11 for the remaining bodies. The order of the two body labels determines the sign of the relative angle. Give the rest angle on the same unwrapped angle branch as the exported values.
-
-The drag model assumes still air and a thin rectangular wing with a **40 mm chord along L11** and a **1.05 m total span**. The full planform area is **0.0420 m²**. The broadside factor is `c = rho*C_D*A/2`. The acute angle `alpha` between L11 and the relative airflow at the midpoint determines the projected area `A*abs(sin(alpha))`. The force on the midpoint is `F = -c*abs(sin(alpha))*|v|*v`, with `v = (dr/dq)*dq/dt`. The CSV includes the incidence angle, area fraction, and `wing_projected_area_m2`. The input torque required to overcome drag is `-F·dr/dq`. Positive torque acts in the chosen direction of rotation. [NASA Glenn, drag equation](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/drag-equation/)
-
-The default drag curve is normalised by `c*(dq/dt)^2`. For drag torque in N·m, supply `--rpm` and either `--air-density` with `--drag-coefficient` or a direct `--drag-factor`. With both aerodynamic and flexure inputs, the CSV also contains the total quasi-static torque. This drag model covers resistance due to translation and projected area. For lift, profile drag, pitching moment, or a varying aerodynamic load, supply forces and moments for each pose to `run_dimensioning.py`.
-
-## Flexure dimensioning
-
-1. Copy `inputs/hinges_TEMPLATE.json`. For each flexure, enter its two adjacent bodies, free length, thickness, rest angle, justified stiffness factor, and material. The default width is 0.010 m. If the length is known and `target_stiffness_nm_rad` is specified, leave `thickness_m` blank to calculate a candidate thickness.
-2. Provide at least three increasing values of `q_rad` with validated motion and wing loads. Supply a continuous relative angle in `hinge_<name>_rad` or absolute body angles in `theta_<link_a>_rad` and `theta_<link_b>_rad`. The tool unwraps jumps at ±π and calculates `theta_b - theta_a` for the absolute-angle input. Sample often enough that each body rotates by less than π between adjacent rows. Specify the rest angle on the same unwrapped branch as the first row.
-3. Supply the midpoint in `wing_x_m` and `wing_y_m`, and the resultant force in `wing_fx_n` and `wing_fy_n`. For a resultant moment about the midpoint, add `wing_external_moment_nm` and the continuous L11 angle in `wing_orientation_rad`. Both columns can be omitted when the resultant moment is zero.
-4. To calculate equivalent pivot locations and link lengths from a layout, pass `--layout path/to/layout.json`. Each entry in `virtual_springs` uses the flexure name and provides `start_xy_m`, `end_xy_m`, and the `pivot_fraction` from the selected PRBM. The coordinates share one planar reference frame, and the pivot is interpolated along the specified segment. In `rigid_links`, give each link two point names from the virtual springs or `fixed_points`, the latter specified as `[x, y]` pairs. Supply the kinematics of this geometry separately for the sweep.
+The [fabrication drawing](results/C2/prbm_fabrication_layout.svg) shows
+all four groups. The [frame JSON](results/C2/prbm_fabrication_frames.json)
+gives the body-local and relaxed coordinates. The separate AC crank
+connects A to C during assembly.
 
 ```powershell
-python run_dimensioning.py --config inputs/hinges_C2.json --kinematics inputs/kinematics_C2.csv --out results/C2_PRBM
+python -m pip install cadquery-ocp-novtk==7.9.3.1.1
+python run_concept2.py --require-closed --step --no-plot
 ```
 
-| Output | Contents |
-| --- | --- |
-| `torque_sweep.csv`, `torque_plot.png` | Flexure, wing, and total input torque versus input angle |
-| `hinge_sweep.csv` | Relative angle, input torque contribution, stress, and strain per flexure and pose |
-| `hinge_checks.csv` | Stiffness, peak stress and strain, static safety factors, and nominal stress amplitude. Optional outputs include thickness for the target stiffness, static thickness limit at the same length and rotation, and the ratio to the supplied fatigue stress amplitude. |
-| `prbm_geometry.json` | Virtual pivot positions and equivalent link lengths when a layout is supplied |
+Each AP214 file contains coloured link-centreline sheets, cylindrical
+pivot datums along +Z, and planes through the pivot axes in the neutral
+clamp directions. The datums use millimetres and stay fixed when blade
+dimensions change. In Onshape, create explicit Mate connectors at the
+axis centres (Z=0) and use the radial edge of the mount plane to orient
+each connector [13]. Derive the parametric hinge at that connector and
+build the solids from its clamp-face references. For a hinge in a
+separate document, update the Derived reference to its new version
+after changing the hinge geometry [14].
 
-The quasi-static model uses `k = factor * E * b * t^3 / (12 * Lf)` and `U = sum(0.5*k*delta_theta^2)`. The actuator torque is `dU/dq - Fx*dx/dq - Fy*dy/dq - M*dphi/dq`. For a straight flexure in uniform pure bending, nominal surface strain is `t*delta_theta/(2*Lf)`, and linear-elastic stress is `E*strain`. The stiffness factor applies to the spring law. Notch stresses, combined loads, and nonlinear or time-dependent behaviour require separate models or measurements. [MIT Mechanics of Materials, pure bending](https://ocw.mit.edu/courses/2-001-mechanics-materials-i-fall-2006/1340543ced026dab5c8444a53fe92153_lec20.pdf)
+## Validation and design limits
 
-A design-level result requires the physical flexure locations and body pairs, the selected flexure models, rest angles, strip dimensions or target stiffnesses, and the resultant wing force and moment throughout the stroke. Recheck loop closure if the virtual pivots change the effective lengths. Spring steel, PLA, and TPU require material data for the chosen production process and operating conditions, including allowable stress, strain, and fatigue data for the relevant mean stress and design life. The optional fatigue check compares nominal amplitude with the limit you supply.
+- **Kinematics.** Tests cover a full revolution, position and velocity
+  closure, relative angles and nominal output motion. The STEP files were
+  re-imported in Open CASCADE to verify the surfaces, datums and colours.
+- **Materials.** Dashboard presets come from manufacturer data for PLA
+  [15], PLA Pro [16], PETG [8], conditioned CoPA [17], TPU95 [18]
+  and Alleima 12R11 steel [19]. Filament tensile values and steel
+  proof-stress values are screening references. The Steel 1500 preset
+  also includes published reversed-bending fatigue references for 0.50
+  and 0.75 mm strip [19, p. 4]. The check compares stress amplitude with
+  the selected reference. Final sizing needs data for the actual material,
+  print orientation and cycle life.
+- **Prototype.** Choose the solid profiles, bores, fasteners and stacking
+  heights in CAD. Check clearances through the full stroke, then compare
+  strain, pivot drift and input torque with ANSYS or bench measurements.
+  The ground support outline is a side-view concept. The model treats the
+  hinge crossing as a nominal pivot. Full assembly loads, blade contact
+  and out-of-plane deflections require a detailed assembly model.
 
-`python run_dimensioning.py --demo` uses synthetic data and writes to `results/PRBM_DEMO_NOT_CONCEPT2/` by default. Run the original single-link demo from `archive/legacy/` if needed.
+## Acknowledgements
 
-## Source files
+OpenAI Codex assisted with developing and checking Python code, deriving and
+explaining the Concept 2 calculations, generating plots and schematics,
+and editing this README and its references.
 
-- `concept2/config.py` records the CAD lengths, angles, and reference pose.
-- `concept2/geometry.py` solves position closure. `concept2/velocity.py` differentiates the loop constraints.
-- `concept2/prbm.py` defines the candidate flexure pairs, relative angles, and reference pivot geometry.
-- `concept2/schematic.py` generates the PRBM drawing, link geometry CSV, and interactive table from `concept2/flexure_table.html`.
-- `dimensioning/core.py` calculates relative rotations, thickness from target stiffness, nominal stress and strain, and input torque. `dimensioning/io.py` reads the inputs and exports the results.
-- `inputs/hinges_TEMPLATE.json` leaves unknown design values blank. `inputs/kinematics_TEMPLATE.csv` gives the expected CSV layout.
-- `tests/` checks position and velocity closure, angle unwrapping, virtual pivot geometry, and inverse sizing.
+## References
 
+[1] “Berekeningen voor Compliant,” unpublished Concept 2 calculation notes
+and CAD dimensions, Nov. 17, 2026. Project file: `Berekeningen voor Compliant.pdf`.
 
-## Crossed-flexure pivot
+[2] “2-fourbars,” unpublished Concept 2 MotionGen linkage model. Project file:
+`2-fourbars.motiongen`.
 
-Run `python run_crossed_flexure.py` for the isolated pivot described by
-[Rommers et al. (2024), Fig. 2 and Table 2](https://doi.org/10.1016/j.precisioneng.2024.05.021).
-The script writes a CSV and PNG to `results/CFP/`. The PNG shows peak surface
-stress, reaction moment, virtual-pivot drift, deformed blades at both rotation
-limits, and the independently released blade centerlines. The CSV includes
-peak absolute elastic surface strain and both drift components.
+[3] L. L. Howell, *Compliant Mechanisms*. New York, NY, USA: Wiley, 2001.
+[Publisher record](https://www.wiley.com/en-us/-p-9780471384786).
 
-The quasi-static 2D model clamps two extensible Euler–Bernoulli blades to rigid
-plates. It fixes the base, prescribes the top plate rotation, and solves its
-translation at zero net external force. The virtual pivot is the neutral
-intersection carried with the moving plate. The STAGE-inspired variant centers
-the two signed bending-moment extremes at each clamp and uses corresponding
-intrinsic curvature and axial strain to realize that prestress in the assembled
-neutral pose. Blade contact, clamp compliance, out-of-plane motion and wing
-loads are outside this model.
+[4] J. Rommers, V. van der Wijk, A. M. Aragón, and J. L. Herder, “The STAGE
+method for simultaneous design of the stress and geometry of flexure
+mechanisms,” *Precis. Eng.*, vol. 89, pp. 103–112, Aug. 2024,
+doi: [10.1016/j.precisioneng.2024.05.021](https://doi.org/10.1016/j.precisioneng.2024.05.021).
+[TU Delft repository copy](https://repository.tudelft.nl/record/uuid:a7900e35-5308-4ad1-960a-931a43ec39c1).
 
-Default geometry is 100 × 100 mm with 0.5 mm thickness and E = 114 GPa.
-The effective width per diagonal is 15 mm, half the article's assembly width
-of 30 mm. Use `--help` for geometry, sweep and output options.
+[5] C. Livermore, “Beam in pure bending,” lecture notes for 2.001, Mechanics
+and Materials I, Massachusetts Institute of Technology, Cambridge, MA, USA,
+Nov. 27, 2006. Accessed: Nov. 25, 2026. [Online]. Available:
+[MIT OpenCourseWare](https://ocw.mit.edu/courses/2-001-mechanics-materials-i-fall-2006/1340543ced026dab5c8444a53fe92153_lec20.pdf).
 
-## Identical crossed-flexure pivots
+[6] J. K. Vandiver, “An introduction to Lagrange equations,” lecture notes for
+2.003SC, Engineering Dynamics, Massachusetts Institute of Technology,
+Cambridge, MA, USA, Fall 2011. Accessed: Nov. 25, 2026. [Online]. Available:
+[MIT OpenCourseWare](https://ocw.mit.edu/courses/2-003sc-engineering-dynamics-fall-2011/d1984062464dcc3df68b5741fd37192b_MIT2_003SCF11_Lagrange.pdf).
 
-### Flexure dashboard
+[7] NASA Glenn Research Center, “Drag equation,” *Beginner’s Guide to
+Aeronautics*. Accessed: Nov. 25, 2026. [Online]. Available:
+[NASA](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/drag-equation/).
 
-Run `python run_flexure_dashboard.py`. Choose material, free diagonal blade
-length, thickness, **width per blade**, and crossing angle. The 2D solver
-animates the two blades and the moving block. The green point tracks the
-neutral pivot attached to that block and shows its drift in X and Y.
-**Save CAD PNG** exports the neutral centerline dimensions.
+[8] Polymaker, “PolyLite PETG,” mechanical properties. Accessed: Nov. 25,
+2026. [Online]. Available:
+[Polymaker](https://polymaker.com/product/polylite-petg).
 
-- **Pause / Manual** lets you position the hinge over ±45°. Auto-play uses ±25°.
-- **Check configuration** shows the peak blade stress against the published
-  material reference and reports the cyclic stress amplitude. The absolute
-  **Manual angle** sets the symmetric check range. A zero setting checks ±45°.
-  The result appears in a plot and in the terminal.
-- **Fit stiffness** fits a single linear stiffness through the origin to the
-  nonlinear reaction-moment curve. It uses the same manual angle setting
-  and defaults to ±25° at zero. The terminal prints a wing-sweep command
-  with the fitted `--common-k` in N·m/rad.
-- The stiffness displayed in the animation uses the small-angle estimate
-  `k = 2 E I / L`, with `I = b t^3 / 12`. It describes one complete pivot
-  with two identical blades.
+[9] B. D. Jensen and L. L. Howell, "The modeling of cross-axis flexural pivots,"
+*Mech. Mach. Theory*, vol. 37, no. 5, pp. 461-476, May 2002,
+doi: [10.1016/S0094-114X(02)00007-1](https://doi.org/10.1016/S0094-114X(02)00007-1).
 
-### PETG wing sweep
+[10] F. Cosandier, S. Henein, M. Richard, and L. Rubbert,
+*The Art of Flexure Mechanism Design*. Lausanne, Switzerland: EPFL Press,
+2017, ch. 5. [Open-access edition](https://www.epflpress.org/open_access_download/2229/1121).
 
-The current PETG example uses PolyLite PETG, 30 mm free length, 0.8 mm thickness,
-4.5 mm width per blade, and a 90° crossing angle. The dashboard's small-angle
-estimate is **0.4729 N·mm/° per complete pivot**, or **0.02709504 N·m/rad**.
-The sweep applies this same stiffness to all seven candidate torsion springs.
-Each spring's rest angle is centered in its own travel range.
+[11] D. Farhadi Machekposhti, “Fabrication and experimental measurement of
+compliant mechanisms,” Lecture 10, ME46115 Compliant Mechanisms, Delft
+University of Technology, Delft, The Netherlands, 2026. Course slides:
+`Lecture_Slides_CM_Week_8_Fabrication_Measurment.pdf`.
 
-```powershell
-python run_wing_sweep.py --common-k 0.02709504 --out results/C2_WING_SWEEP_PETG
-```
+[12] J. Rommers, "Design strategies for large range flexure mechanisms,"
+Ph.D. dissertation, Delft University of Technology, Delft, The Netherlands,
+2022, doi: [10.4233/uuid:4eaf8bdb-53e2-49e5-9730-2550945b267f](https://doi.org/10.4233/uuid:4eaf8bdb-53e2-49e5-9730-2550945b267f).
+[Full text](https://pure.tudelft.nl/ws/portalfiles/portal/122952921/JRommers_dissertation_7_6_2022.pdf).
 
-Use [input_torque.png](results/C2_WING_SWEEP_PETG/input_torque.png) or the
-`flexure_torque_nm` column in [wing_sweep.csv](results/C2_WING_SWEEP_PETG/wing_sweep.csv).
-Over 721 positions the flexure contribution ranges from **−0.0308 to +0.0279
-N·m** in the default clockwise sweep. Negative torque means the springs
-assist motion in the sweep direction. This example covers elastic torque.
-To include modeled drag in N·m, also supply `--rpm` and either
-`--drag-factor` or `--air-density` with `--drag-coefficient`. The sweep is
-quasi-static and does not include inertia.
+[13] Onshape, “Mate connector,” *Onshape Help*. Accessed: Nov. 25, 2026.
+[Online]. Available: [Onshape Help](https://cad.onshape.com/help/Content/mateconnector_a.htm).
 
-To calculate a shared small-angle stiffness directly from dimensions, use the
-four `--cfp-*` options in place of `--common-k`. Length is the free diagonal
-length and width is per blade.
+[14] Onshape, “Derived,” *Onshape Help*. Accessed: Nov. 25, 2026.
+[Online]. Available: [Onshape Help](https://cad.onshape.com/help/Content/PartStudio/derived.htm).
 
-```powershell
-python run_wing_sweep.py --cfp-length-mm 30 --cfp-width-mm 4.5 --cfp-thickness-mm 0.8 --cfp-e-gpa 2.1168 --out results/C2_WING_SWEEP_PETG
-```
+[15] Polymaker, “PolyLite PLA,” technical data sheet. Accessed: Nov. 25,
+2026. [Online]. Available:
+[Polymaker Wiki](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/pla/polylite-tm-pla).
 
-### One-revolution bench test
+[16] Polymaker, “PolyLite PLA Pro,” technical data sheet. Accessed: Nov. 25,
+2026. [Online]. Available:
+[Polymaker Wiki](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/pla/polylite-tm-pla-pro).
 
-For the PETG sweep, a starting setup is a pulley with a 15 mm effective
-radius (measured to the rope centerline), a 0.5 kg counterweight, and a
-45 N inline load cell on the actuator side. With direct 1:1 rope travel,
-one crank revolution requires 94.2 mm of usable actuator stroke. A 100 mm
-actuator leaves 5.8 mm of total reserve. A 150 mm actuator leaves 55.8 mm
-and gives more room to position the measurement between end stops.
+[17] Polymaker, “PolyMide CoPA,” technical data sheet. Accessed: Nov. 25,
+2026. [Online]. Available:
+[Polymaker Wiki](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/nylon/polymide-tm-copa).
 
-For a slow test, estimate actuator-side tension as
-`F_loadcell = m_counterweight * g + T_input / r`, with positive torque
-in the actuation direction. The PETG elastic torque predicts about
-2.85 to 6.76 N over the turn. Friction, air loads, and accelerations can
-change the measured force. This estimate assumes a taut rope and no slip.
+[18] Polymaker, “PolyFlex TPU95,” technical data sheet. Accessed: Nov. 25,
+2026. [Online]. Available:
+[Polymaker Wiki](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/tpu/polyflex-tm-tpu95).
 
-### Crossed-flexure material presets
-
-The stress check compares elastic-model peak stress against the published
-reference below. Filament values are for printed XY test specimens. The
-filament references describe tensile strength or stress at a specified
-elongation. They do not give the elastic limit or a fatigue allowable.
-The TPU point at 100% strain only provides context for the linear-material
-model. Nylon uses the moisture-conditioned data.
-
-| Preset | Young's modulus (GPa) | Reference (MPa) | Basis and source |
-| --- | ---: | ---: | --- |
-| PLA | 3.4269 | 52.3 | XY tensile strength, [PolyLite PLA](https://polymaker.com/wp-content/uploads/lana-downloads/PolyLite-PLA_TDS_EN_V5.4.pdf) |
-| PLA+ | 2.9322 | 49.8 | XY tensile strength, [PolyLite PLA Pro](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/pla/polylite-tm-pla-pro) |
-| PETG | 2.1168 | 50.8 | XY tensile strength, [PolyLite PETG](https://polymaker.com/product/polylite-petg) |
-| PA | 0.724 | 34.3 | Conditioned XY tensile strength, [PolyMide CoPA](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/nylon/polymide-tm-copa) |
-| TPU | 0.0336 | 11.1 | XY stress at 100% strain, [PolyFlex TPU95](https://wiki.polymaker.com/polymaker-products/more-about-our-products/documents/technical-data-sheets/tpu/polyflex-tm-tpu95) |
-| Steel | 185 | 1150 | Rp0.2, [Alleima 12R11](https://integration.alleima.com/jp/technical-center/material-datasheets/strip-steel/alleima-12r11/), cold rolled with Rm = 1300 MPa |
-
-The dashboard also offers Alleima 12R11 in the cold-rolled Rm = 1500 MPa
-condition (Rp0.2 = 1375 MPa). The original Steel preset retains Rp0.2 = 1150 MPa.
-For Steel 1500, the manufacturer's reversed-bending reference is 555 MPa at
-0.50 mm or 525 MPa at 0.75 mm. These values are for transverse bending, zero
-mean stress, and 50% survival at 2 million cycles. Other configurations can
-use a user-supplied fatigue stress amplitude limit in MPa. The amplitude is
-half the local stress range over the symmetric angle sweep, calculated at each
-blade surface and then maximized. The comparison reports mean stress separately
-and does not apply a mean-stress correction or predict fatigue life.
+[19] Alleima, “Alleima 12R11,” strip steel datasheet, May 9, 2025. Accessed:
+Nov. 25, 2026. [Online]. Available:
+[Alleima](https://www.alleima.com/contentassets/56dacf45f3484ed7ad6a391aae380fd2/datasheet-alleima-12r11-en-v2025-05-09-0637-version-1.pdf/download).

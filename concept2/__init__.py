@@ -1,1 +1,1 @@
-"""Concept 2 compliant mechanism: planar kinematics and PRBM placeholders."""
+"""Planar kinematics, pseudo-rigid-body analysis and fabrication for Concept 2."""

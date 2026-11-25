@@ -9,9 +9,10 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.patches as patches
 
 from run_crossed_flexure import sweep
+from concept2.config import CFP_BLADE_WIDTH_MM, CFP_CROSSING_DEG, CFP_LENGTH_MM, CFP_THICKNESS_MM
 
 # ==========================================
-# 1. MATERIAALDATABASE
+# 1. MATERIAL PRESETS
 # ==========================================
 materialen = {
     "PLA": {"E": 3426.9e6, "stress_reference": 52.3e6,
@@ -33,20 +34,20 @@ materialen = {
                    "fatigue_by_thickness": {0.5: 555, 0.75: 525}},
 }
 
-# Startwaarden
+# Initial settings
 state = {
     "mat_key": "PETG",
-    "L_mm": 30.0,
-    "t_mm": 0.8,
-    "b_mm": 4.5,
-    "kruis_hoek": 90.0,
+    "L_mm": CFP_LENGTH_MM,
+    "t_mm": CFP_THICKNESS_MM,
+    "b_mm": CFP_BLADE_WIDTH_MM,
+    "kruis_hoek": CFP_CROSSING_DEG,
     "rot_deg": 0.0,
     "auto_play": True,
     "phase": 0.0
 }
 
 # ==========================================
-# 2. BEREKENINGEN & KINEMATICA
+# 2. CALCULATIONS AND KINEMATICS
 # ==========================================
 def bereken_alles():
     mat = materialen[state["mat_key"]]
@@ -80,12 +81,12 @@ def motion_poses(width_mm, height_mm, thickness_mm, blade_width_mm, modulus):
 
 
 # ==========================================
-# 3. DASHBOARD OPZETTEN
+# 3. DASHBOARD SETUP
 # ==========================================
 fig = plt.figure(figsize=(13.5, 7.8))
 fig.canvas.manager.set_window_title("Crossed Flexure Pivot - Interactive Simulator & CAD")
 
-# Twee hoofdplots: Links = Animatie, Rechts = CAD Schets
+# Main panels: motion preview on the left and CAD sketch on the right.
 ax_sim = fig.add_axes([0.05, 0.34, 0.40, 0.58])
 ax_cad = fig.add_axes([0.52, 0.34, 0.44, 0.58])
 
@@ -95,7 +96,7 @@ def teken_dashboard():
     W_mm, H_mm = res["W_mm"], res["H_mm"]
     th_deg = state["rot_deg"]
 
-    # --- LINKER PLOT: SIMULATIE ---
+    # Motion preview
     ax_sim.clear()
     lim = max(35.0, L_mm * 0.85)
     ax_sim.set_xlim(-lim, lim)
@@ -109,6 +110,7 @@ def teken_dashboard():
     A1, B1_0 = np.array([-W_mm/2, -H_mm/2]), np.array([W_mm/2, H_mm/2])
     A2, B2_0 = np.array([W_mm/2, -H_mm/2]), np.array([-W_mm/2, H_mm/2])
 
+    nonlinear_moment_nmm = None
     try:
         poses = motion_poses(W_mm, H_mm, t_mm, b_mm, res["mat"]["E"])
     except RuntimeError:
@@ -119,6 +121,7 @@ def teken_dashboard():
         share = (th_deg - MOTION_ANGLES[index]) / (MOTION_ANGLES[index + 1] - MOTION_ANGLES[index])
         points = (1 - share) * poses[index][0] + share * poses[index + 1][0]
         pivot = (1 - share) * poses[index][3] + share * poses[index + 1][3]
+        nonlinear_moment_nmm = 1000 * ((1 - share) * poses[index][2] + share * poses[index + 1][2])
         # The solver uses the fixed clamps as y = 0. Center the drawing on the neutral pivot.
         points[:, 1] -= H_mm / 2
         ax_sim.plot(*points[:, :, 0].T, "k-", lw=6, label="Fixed block")
@@ -128,17 +131,19 @@ def teken_dashboard():
         ax_sim.plot(*pivot, "go", markersize=8, label="Moving pivot reference")
         ax_sim.legend(loc="lower right", fontsize=8)
 
-    moment_Nmm = res["K_Nmm_deg"] * abs(th_deg)
+    linear_moment_nmm = res["K_Nmm_deg"] * th_deg
     info = (
         f"Rotation: {th_deg:+5.1f}\u00b0\n"
-        f"Stiffness K: {res['K_Nmm_deg']:.4f} Nmm/° ({res['K_Nm_rad']:.4f} Nm/rad)\n"
-        f"Linear torque: {moment_Nmm:5.2f} Nmm"
+        f"Small-angle K: {res['K_Nm_rad']:.5f} N·m/rad\n"
+        f"Linear holding moment: {linear_moment_nmm:+.2f} N·mm"
     )
+    if nonlinear_moment_nmm is not None:
+        info += f"\nNonlinear holding moment: {nonlinear_moment_nmm:+.2f} N·mm"
     ax_sim.text(0.03, 0.96, info, transform=ax_sim.transAxes, va='top', fontsize=9,
                 color="black",
                 bbox=dict(boxstyle="round", facecolor="white", alpha=0.9))
 
-    # --- RECHTER PLOT: 2D CAD SCHETS ---
+    # 2D CAD sketch
     ax_cad.clear()
     blok_h = max(4.0, L_mm * 0.16)
     blok_w = W_mm + max(8.0, L_mm * 0.35)
@@ -154,7 +159,7 @@ def teken_dashboard():
     ax_cad.plot(*np.stack((A2, B2_0)).T, 'k-.', lw=1)
     ax_cad.plot(0, 0, 'go', markersize=6)
 
-    # Maatlijnen
+    # Dimension lines
     y_dim = H_mm/2 + blok_h + L_mm * 0.10
     ax_cad.annotate("", xy=(-W_mm/2, y_dim), xytext=(W_mm/2, y_dim), arrowprops=dict(arrowstyle="<->"))
     ax_cad.plot([-W_mm/2, -W_mm/2], [H_mm/2, y_dim], 'k:', lw=0.8)
@@ -186,14 +191,14 @@ def teken_dashboard():
     ax_cad.set_xlabel("X [mm]")
 
 # ==========================================
-# 4. INTERACTIEVE WIDGETS (SLIDERS & KNOPPEN)
+# 4. INTERACTIVE CONTROLS
 # ==========================================
-# Materiaal RadioButtons linksonder
+# Material choices
 ax_radio = fig.add_axes([0.05, 0.04, 0.14, 0.23], facecolor='#f4f4f4')
 ax_radio.set_title("Material", fontsize=10, fontweight='bold')
 radio = RadioButtons(ax_radio, list(materialen.keys()), active=2)
 
-# Sliders in het middenonder
+# Geometry and rotation sliders
 ax_L    = fig.add_axes([0.29, 0.22, 0.45, 0.03])
 ax_t    = fig.add_axes([0.29, 0.17, 0.45, 0.03])
 ax_b    = fig.add_axes([0.29, 0.12, 0.45, 0.03])
@@ -206,7 +211,7 @@ s_b    = Slider(ax_b,    "Blade width [mm]", 2.0,  30.0, valinit=state["b_mm"], 
 s_hoek = Slider(ax_hoek, "Crossing angle [°] ", 40.0, 140.0, valinit=state["kruis_hoek"], valstep=1.0)
 s_rot  = Slider(ax_rot,  "Manual angle θ [°]", -45.0, 45.0, valinit=0.0, valstep=0.5)
 
-# Knoppen rechtsonder
+# Dashboard actions
 ax_play = fig.add_axes([0.80, 0.23, 0.15, 0.05])
 ax_save = fig.add_axes([0.80, 0.09, 0.15, 0.05])
 ax_fit = fig.add_axes([0.80, 0.02, 0.15, 0.05])
